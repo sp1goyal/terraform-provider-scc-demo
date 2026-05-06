@@ -105,7 +105,7 @@ jobs:
           set +e
 
           terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} plan \
-            -invoke=action.scc_generate_csr.${{ env.CERTIFICATE_TYPE }} \
+            -invoke=action.scc_generate_csr.${{ env.CERTIFICATE_TYPE }}_cert \
             -out=${{ env.TEMP_PLAN_OUTPUT }} \
             -no-color \
             -detailed-exitcode
