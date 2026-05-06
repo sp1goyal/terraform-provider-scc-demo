@@ -12,14 +12,6 @@ on:
           - ca
           - ui
 
-      upload_format:
-        description: 'Format to upload the signed certificate (e.g., signed_chain or .p12)'
-        required: true
-        type: choice
-        options:
-          - signed_chain
-          - p12
-
 
 env:
   PATH_TO_TFSCRIPT: 'Flow2'
@@ -39,7 +31,6 @@ jobs:
       SCC_INSTANCE_URL: ${{ secrets.SCC_INSTANCE_URL }}
 
       CERTIFICATE_TYPE: ${{ github.event.inputs.certificate_type }}
-      UPLOAD_FORMAT: ${{ github.event.inputs.upload_format }}
 
     steps:
       - name: Check out Git repository
@@ -56,7 +47,6 @@ jobs:
       - name: Show Selected Inputs
         run: |
           echo "Certificate Type: $CERTIFICATE_TYPE"
-          echo "Upload Format: $UPLOAD_FORMAT"
 
       - name: Generate Terraform main.tf dynamically
         shell: bash
@@ -177,47 +167,19 @@ jobs:
             -sha256
 
       - name: Create Signed Chain
-        if: env.UPLOAD_FORMAT == 'signed_chain'
         shell: bash
         run: |
           cd ${{ env.PATH_TO_TFSCRIPT }}
 
           cat ${{ env.CERTIFICATE_TYPE }}_cert.pem myCA.pem > signed_chain.pem
 
-      - name: Create PKCS12 Certificate
-        if: env.UPLOAD_FORMAT == 'p12'
-        shell: bash
-        run: |
-          cd ${{ env.PATH_TO_TFSCRIPT }}
-
-          openssl pkcs12 \
-            -export \
-            -out ${{ env.CERTIFICATE_TYPE }}.p12 \
-            -inkey myCA.key \
-            -in ${{ env.CERTIFICATE_TYPE }}_cert.pem \
-            -certfile myCA.pem \
-            -password pass:demo
-
       - name: Append Signed Chain Resource
-        if: env.UPLOAD_FORMAT == 'signed_chain'
         shell: bash
         run: |
           cat <<'EOF' >> ${{ env.PATH_TO_TFSCRIPT }}/main.tf
 
           resource "scc_system_certificate_signed_chain" "uploaded_cert" {
             signed_chain = file("${path.module}/signed_chain.pem")
-          }
-          EOF
-
-      - name: Append P12 Resource
-        if: env.UPLOAD_FORMAT == 'p12'
-        shell: bash
-        run: |
-          cat <<'EOF' >> ${{ env.PATH_TO_TFSCRIPT }}/main.tf
-
-          resource "scc_system_certificate_pkcs12" "uploaded_cert" {
-            pkcs12  = filebase64("${path.module}/${{ env.CERTIFICATE_TYPE }}.p12")
-            password = "changeit"
           }
           EOF
 
