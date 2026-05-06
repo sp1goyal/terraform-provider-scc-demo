@@ -1,0 +1,166 @@
+name: Generate CSR and Upload Signed Chain to SCC
+
+on:
+  workflow_dispatch:
+
+env:
+  PATH_TO_TFSCRIPT: 'Flow2'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Generate CSR and Upload Signed Chain
+    runs-on: ubuntu-latest
+
+    env:
+      SCC_USERNAME: ${{ secrets.SCC_USERNAME }}
+      SCC_PASSWORD: ${{ secrets.SCC_PASSWORD }}
+      SCC_INSTANCE_URL: ${{ secrets.SCC_INSTANCE_URL }}
+      TF_VAR_subaccount: ${{ secrets.DEMO_SUBACCOUNT_ID }}
+      TF_VAR_cloud_user: ${{ secrets.CLOUD_USER }}
+      TF_VAR_cloud_password: ${{ secrets.CLOUD_PASSWORD }}
+
+    steps:
+      - name: Check out Git repository
+        id: checkout_repo
+        uses: actions/checkout@v6
+
+      - name: Setup Terraform
+        id: setup_terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_wrapper: false
+          terraform_version: latest
+
+      - name: Terraform Init
+        id: terraform_init
+        shell: bash
+        run: |
+          terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} init -no-color
+
+      - name: Terraform Plan - Generate CSR
+        id: terraform_plan_generate_csr
+        shell: bash
+        run: |
+          terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} plan \
+            -invoke=action.scc_generate_csr.system_cert \
+            -no-color \
+            -detailed-exitcode
+
+          EXIT_CODE=$?
+
+          echo "exitcode=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          if [ $EXIT_CODE -eq 1 ]; then
+            echo "Error during terraform plan execution"
+            exit 1
+          elif [ $EXIT_CODE -eq 2 ]; then
+            echo "Changes detected in terraform plan"
+          else
+            echo "No changes detected in terraform plan"
+          fi
+
+      - name: Terraform Apply - Generate CSR
+        if: steps.terraform_plan_generate_csr.outputs.exitcode == '0' || steps.terraform_plan_generate_csr.outputs.exitcode == '2'
+        id: terraform_apply_generate_csr
+        shell: bash
+        run: |
+          terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} apply \
+            -invoke=action.scc_generate_csr.system_cert \
+            -auto-approve \
+            -no-color
+
+      - name: Verify CSR file exists
+        shell: bash
+        run: |
+          ls -lah
+          test -f "${{ env.PATH_TO_TFSCRIPT }}/system_csr.pem"
+
+      - name: Setup OpenSSL
+        shell: bash
+        run: |
+          openssl version
+
+      - name: Generate CA Certificate and Key
+        shell: bash
+        run: |
+          cd ${{ env.PATH_TO_TFSCRIPT }}
+
+          openssl genrsa -out myCA.key 2048
+
+          openssl req \
+            -x509 \
+            -new \
+            -nodes \
+            -key myCA.key \
+            -sha256 \
+            -days 3650 \
+            -out myCA.pem \
+            -subj "/C=IN/ST=Karnataka/L=Bangalore/O=SAP/OU=BTP Engineering and Delivery Services India/CN=Example-Root-CA"
+
+      - name: Sign CSR using OpenSSL
+        shell: bash
+        run: |
+          cd ${{ env.PATH_TO_TFSCRIPT }}
+
+          openssl x509 \
+            -req \
+            -in system_csr.pem \
+            -CA myCA.pem \
+            -CAkey myCA.key \
+            -CAcreateserial \
+            -out system_cert.pem \
+            -days 365 \
+            -sha256
+
+      - name: Create Signed Chain File
+        shell: bash
+        run: |
+          cd ${{ env.PATH_TO_TFSCRIPT }}
+
+          cat system_cert.pem myCA.pem > signed_chain.pem
+
+          echo "Signed chain created successfully"
+          ls -lah signed_chain.pem
+
+      - name: Append Signed Chain Resource to main.tf
+        shell: bash
+        run: |
+          cat <<'EOF' >> ${{ env.PATH_TO_TFSCRIPT }}/main.tf
+
+          resource "scc_system_certificate_signed_chain" "system_cert_signed_chain_as_file" {
+            signed_chain = file("${path.module}/signed_chain.pem")
+          }
+          EOF
+
+      - name: Terraform Plan - Upload Signed Chain
+        id: terraform_plan_signed_chain
+        shell: bash
+        run: |
+          terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} plan \
+              -no-color \
+            -detailed-exitcode
+
+          EXIT_CODE=$?
+
+          echo "exitcode=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          if [ $EXIT_CODE -eq 1 ]; then
+            echo "Error during terraform plan execution"
+            exit 1
+          elif [ $EXIT_CODE -eq 2 ]; then
+            echo "Changes detected in terraform plan"
+          else
+            echo "No changes detected in terraform plan"
+          fi
+
+      - name: Terraform Apply - Upload Signed Chain
+        if: steps.terraform_plan_signed_chain.outputs.exitcode == '0' || steps.terraform_plan_signed_chain.outputs.exitcode == '2'
+        id: terraform_apply_signed_chain
+        shell: bash
+        run: |
+          terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} apply \
+            -auto-approve \
+            -no-color
