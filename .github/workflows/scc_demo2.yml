@@ -1,7 +1,25 @@
-name: Generate CSR and Upload Signed Chain to SCC
+name: Generate CSR and Upload Certificate to SCC
 
 on:
   workflow_dispatch:
+    inputs:
+      certificate_type:
+        description: 'Type of certificate to generate (e.g., system or ca or ui)'
+        required: true
+        type: choice
+        options:
+          - system
+          - ca
+          - ui
+
+      upload_format:
+        description: 'Format to upload the signed certificate (e.g., signed_chain or .p12)'
+        required: true
+        type: choice
+        options:
+          - signed_chain
+          - p12
+
 
 env:
   PATH_TO_TFSCRIPT: 'Flow2'
@@ -12,16 +30,16 @@ permissions:
 
 jobs:
   test:
-    name: Generate CSR and Upload Signed Chain
+    name: Generate CSR and Upload Certificate to SCC
     runs-on: ubuntu-latest
 
     env:
       SCC_USERNAME: ${{ secrets.SCC_USERNAME }}
       SCC_PASSWORD: ${{ secrets.SCC_PASSWORD }}
       SCC_INSTANCE_URL: ${{ secrets.SCC_INSTANCE_URL }}
-      TF_VAR_subaccount: ${{ secrets.DEMO_SUBACCOUNT_ID }}
-      TF_VAR_cloud_user: ${{ secrets.CLOUD_USER }}
-      TF_VAR_cloud_password: ${{ secrets.CLOUD_PASSWORD }}
+
+      CERTIFICATE_TYPE: ${{ github.event.inputs.certificate_type }}
+      UPLOAD_FORMAT: ${{ github.event.inputs.upload_format }}
 
     steps:
       - name: Check out Git repository
@@ -34,6 +52,45 @@ jobs:
         with:
           terraform_wrapper: false
           terraform_version: latest
+
+      - name: Show Selected Inputs
+        run: |
+          echo "Certificate Type: $CERTIFICATE_TYPE"
+          echo "Upload Format: $UPLOAD_FORMAT"
+
+      - name: Generate Terraform main.tf dynamically
+        shell: bash
+        run: |
+          cat <<EOF > ${{ env.PATH_TO_TFSCRIPT }}/main.tf
+
+          action "scc_generate_csr" "${CERTIFICATE_TYPE}_cert" {
+            config {
+              type     = "${CERTIFICATE_TYPE}"
+              key_size = 2048
+
+              subject_dn = {
+                cn    = "cloud-connector.example.com"
+                o     = "SAP"
+                ou    = "BTP Engineering and Delivery Services India"
+                l     = "Bangalore"
+                st    = "Karnataka"
+                c     = "IN"
+                email = "admin@example.com"
+              }
+
+              subject_alternative_names = [
+                {
+                  type  = "DNS"
+                  value = "cloud-connector.example.com"
+                },
+                {
+                  type  = "DNS"
+                  value = "cc.internal.local"
+                }
+              ]
+            }
+          }
+          EOF
 
       - name: Terraform Init
         id: terraform_init
@@ -48,7 +105,7 @@ jobs:
           set +e
 
           terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} plan \
-            -invoke=action.scc_generate_csr.system_cert \
+            -invoke=action.scc_generate_csr.${{ env.CERTIFICATE_TYPE }} \
             -out=${{ env.TEMP_PLAN_OUTPUT }} \
             -no-color \
             -detailed-exitcode
@@ -80,7 +137,7 @@ jobs:
         shell: bash
         run: |
           ls -lah
-          test -f "${{ env.PATH_TO_TFSCRIPT }}/system_csr.pem"
+          test -f "${{ env.PATH_TO_TFSCRIPT }}/${{ env.CERTIFICATE_TYPE }}_csr.pem"
 
       - name: Setup OpenSSL
         shell: bash
@@ -111,31 +168,56 @@ jobs:
 
           openssl x509 \
             -req \
-            -in system_csr.pem \
+            -in ${{ env.CERTIFICATE_TYPE }}_csr.pem \
             -CA myCA.pem \
             -CAkey myCA.key \
             -CAcreateserial \
-            -out system_cert.pem \
+            -out ${{ env.CERTIFICATE_TYPE }}_cert.pem \
             -days 365 \
             -sha256
 
-      - name: Create Signed Chain File
+      - name: Create Signed Chain
+        if: env.UPLOAD_FORMAT == 'signed_chain'
         shell: bash
         run: |
           cd ${{ env.PATH_TO_TFSCRIPT }}
 
-          cat system_cert.pem myCA.pem > signed_chain.pem
+          cat ${{ env.CERTIFICATE_TYPE }}_cert.pem myCA.pem > signed_chain.pem
 
-          echo "Signed chain created successfully"
-          ls -lah signed_chain.pem
+      - name: Create PKCS12 Certificate
+        if: env.UPLOAD_FORMAT == 'p12'
+        shell: bash
+        run: |
+          cd ${{ env.PATH_TO_TFSCRIPT }}
 
-      - name: Append Signed Chain Resource to main.tf
+          openssl pkcs12 \
+            -export \
+            -out ${{ env.CERTIFICATE_TYPE }}.p12 \
+            -inkey myCA.key \
+            -in ${{ env.CERTIFICATE_TYPE }}_cert.pem \
+            -certfile myCA.pem \
+            -password pass:demo
+
+      - name: Append Signed Chain Resource
+        if: env.UPLOAD_FORMAT == 'signed_chain'
         shell: bash
         run: |
           cat <<'EOF' >> ${{ env.PATH_TO_TFSCRIPT }}/main.tf
 
-          resource "scc_system_certificate_signed_chain" "system_cert_signed_chain_as_file" {
+          resource "scc_system_certificate_signed_chain" "uploaded_cert" {
             signed_chain = file("${path.module}/signed_chain.pem")
+          }
+          EOF
+
+      - name: Append P12 Resource
+        if: env.UPLOAD_FORMAT == 'p12'
+        shell: bash
+        run: |
+          cat <<'EOF' >> ${{ env.PATH_TO_TFSCRIPT }}/main.tf
+
+          resource "scc_system_certificate_pkcs12" "uploaded_cert" {
+            pkcs12  = filebase64("${path.module}/${{ env.CERTIFICATE_TYPE }}.p12")
+            password = "changeit"
           }
           EOF
 
@@ -144,7 +226,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          
+
           terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} plan \
               -no-color \
             -detailed-exitcode \
@@ -163,7 +245,7 @@ jobs:
             echo "No changes detected in terraform plan"
           fi
 
-      - name: Terraform Apply - Upload Signed Chain
+      - name: Terraform Apply - Upload Certificate
         if: steps.terraform_plan_signed_chain.outputs.exitcode == '0' || steps.terraform_plan_signed_chain.outputs.exitcode == '2'
         id: terraform_apply_signed_chain
         shell: bash
