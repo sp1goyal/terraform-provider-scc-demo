@@ -70,7 +70,6 @@ jobs:
         shell: bash
         run: |
           terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} apply \
-            -invoke=action.scc_generate_csr.system_cert \
             -auto-approve \
             -no-color \
             ${{ env.TEMP_PLAN_OUTPUT }}
