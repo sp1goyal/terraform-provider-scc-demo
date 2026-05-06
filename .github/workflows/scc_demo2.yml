@@ -5,6 +5,7 @@ on:
 
 env:
   PATH_TO_TFSCRIPT: 'Flow2'
+  TEMP_PLAN_OUTPUT : 'plan-output.tfplan'
 
 permissions:
   contents: read
@@ -46,6 +47,7 @@ jobs:
         run: |
           terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} plan \
             -invoke=action.scc_generate_csr.system_cert \
+            -out=${{ env.TEMP_PLAN_OUTPUT }} \
             -no-color \
             -detailed-exitcode
 
@@ -70,7 +72,8 @@ jobs:
           terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} apply \
             -invoke=action.scc_generate_csr.system_cert \
             -auto-approve \
-            -no-color
+            -no-color \
+            ${{ env.TEMP_PLAN_OUTPUT }}
 
       - name: Verify CSR file exists
         shell: bash
@@ -141,7 +144,8 @@ jobs:
         run: |
           terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} plan \
               -no-color \
-            -detailed-exitcode
+            -detailed-exitcode \
+            -out=${{ env.TEMP_PLAN_OUTPUT }}
 
           EXIT_CODE=$?
 
@@ -163,4 +167,5 @@ jobs:
         run: |
           terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} apply \
             -auto-approve \
-            -no-color
+            -no-color \
+            ${{ env.TEMP_PLAN_OUTPUT }}
