@@ -45,6 +45,8 @@ jobs:
         id: terraform_plan_generate_csr
         shell: bash
         run: |
+          set +e
+          
           terraform -chdir=${{ env.PATH_TO_TFSCRIPT }} plan \
             -invoke=action.scc_generate_csr.system_cert \
             -out=${{ env.TEMP_PLAN_OUTPUT }} \
